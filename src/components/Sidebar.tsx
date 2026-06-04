@@ -19,7 +19,7 @@ interface SidebarProps {
   userProfile: UserProfile | null;
   settings: UserSettings;
   onUpdateSettings: (s: Partial<UserSettings>) => void;
-  onSignInWithGoogle: () => void;
+  onSignInWithGoogle: () => Promise<void>;
   onSignInWithEmail: (email: string, pass: string, isSignUp: boolean, displayName?: string) => Promise<void>;
   onSendResetEmail: (email: string) => Promise<void>;
   onSignOut: () => void;
@@ -241,7 +241,7 @@ export default function Sidebar({
             <select
               value={settings.voiceName}
               onChange={(e) => onUpdateSettings({ voiceName: e.target.value })}
-              className="w-full p-1.5 bg-neutral-850 border border-neutral-800 text-neutral-300 rounded focus:outline-none"
+              className="w-full p-1.5 bg-neutral-850 border border-neutral-800 text-neutral-300 rounded focus:outline-none focus:border-[#8B5CF6] transition-colors"
             >
               <option value="Zephyr">Zephyr (Warm Male)</option>
               <option value="Kore">Kore (Clear Female)</option>
@@ -249,6 +249,34 @@ export default function Sidebar({
               <option value="Charon">Charon (Professional Male)</option>
               <option value="Fenrir">Fenrir (Deep Male)</option>
             </select>
+          </div>
+
+          {/* Gemini API Key Fallback */}
+          <div className="space-y-1.5 text-xs pt-1 border-t border-neutral-900">
+            <label className="text-neutral-400 flex items-center gap-1">
+              <KeyRound size={12} className="text-[#8B5CF6]" /> Gemini API Key
+            </label>
+            <div className="relative">
+              <input
+                type="password"
+                placeholder="AIzaSy... (Client Fallback)"
+                value={settings.geminiApiKey || ''}
+                onChange={(e) => onUpdateSettings({ geminiApiKey: e.target.value })}
+                className="w-full p-1.5 pr-10 bg-neutral-850 border border-neutral-800 text-neutral-300 rounded focus:outline-none focus:border-[#8B5CF6] text-[10px] font-mono transition-colors"
+              />
+              {settings.geminiApiKey && (
+                <button
+                  type="button"
+                  onClick={() => onUpdateSettings({ geminiApiKey: '' })}
+                  className="absolute right-1 text-[9px] text-neutral-500 hover:text-neutral-300 cursor-pointer top-1/2 -translate-y-1/2 p-1"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+            <p className="text-[9px] text-neutral-500 leading-normal">
+              Required ONLY to support direct client-side requests on static web hosting platforms (like Vercel).
+            </p>
           </div>
         </motion.div>
       )}
@@ -462,9 +490,14 @@ export default function Sidebar({
                 {/* Google SSO Button */}
                 <button
                   type="button"
-                  onClick={() => {
-                    onSignInWithGoogle();
-                    setShowAuthModal(false);
+                  onClick={async () => {
+                    setAuthError(null);
+                    try {
+                      await onSignInWithGoogle();
+                      setShowAuthModal(false);
+                    } catch (err: any) {
+                      setAuthError(err.message || "Google authentication failed.");
+                    }
                   }}
                   className="w-full py-2 bg-neutral-800 hover:bg-neutral-750 transition-colors border border-neutral-700/80 rounded-xl text-xs text-neutral-100 font-medium flex items-center justify-center gap-2"
                 >

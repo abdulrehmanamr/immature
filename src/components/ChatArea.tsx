@@ -436,8 +436,8 @@ export default function ChatArea({
           })}
 
           {/* Active AI Streaming turn */}
-          {isStreaming && currentStreamText && (
-            <div className="flex gap-4 md:gap-5 text-left">
+          {isStreaming && (
+            <div className="flex gap-4 md:gap-5 text-left animate-fadeIn">
               <div className="w-8 h-8 rounded-lg bg-[#171717] border border-[#262626] text-[#8B5CF6] flex items-center justify-center shrink-0">
                 <Bot size={16} className="animate-pulse" />
               </div>
@@ -445,11 +445,15 @@ export default function ChatArea({
                 <div className="flex items-center gap-2 text-[10px] text-neutral-500 font-mono">
                   <span className="font-semibold text-neutral-400">AEZ Ai</span>
                   <span>•</span>
-                  <span>Streaming response...</span>
+                  <span>{currentStreamText ? "Streaming response..." : "Thinking..."}</span>
                 </div>
                 <div className="p-4 rounded-2xl bg-transparent text-neutral-100 border-none leading-relaxed text-sm">
                   <div className="space-y-3">
-                    {renderFormattedContent(currentStreamText, 'streaming-message', true)}
+                    {currentStreamText ? (
+                      renderFormattedContent(currentStreamText, 'streaming-message', true)
+                    ) : (
+                      <span className="inline-block w-1.5 h-3.5 bg-[#8B5CF6] animate-pulse align-middle" />
+                    )}
                   </div>
                 </div>
               </div>

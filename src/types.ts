@@ -11,6 +11,7 @@ export interface UserSettings {
   voiceName: string; // Puck, Charon, Kore, Fenrir, Zephyr
   voiceSpeed: number;
   voicePitch: number;
+  geminiApiKey?: string;
 }
 
 export interface Conversation {

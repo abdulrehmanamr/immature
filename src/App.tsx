@@ -28,7 +28,8 @@ async function streamGeminiResponse(
   attachments: any[],
   onChunk: (text: string) => void,
   onCitations?: (chunks: any[]) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  customApiKey?: string
 ): Promise<string> {
   try {
     // 1. Attempt Server SSE endpoint first
@@ -93,10 +94,16 @@ async function streamGeminiResponse(
 
     console.warn("Express backend endpoint failed/404. Initiating client-side Gemini fallback strategy...");
     
-    // Resolve fallback API Key
-    const apiKey = (import.meta as any).env.VITE_GEMINI_API_KEY || (import.meta as any).env.VITE_FIREBASE_API_KEY || firebaseConfigLocal?.apiKey;
+    // Resolve fallback API Key (custom user setting key or public environment variable)
+    const apiKey = customApiKey || (import.meta as any).env.VITE_GEMINI_API_KEY;
     if (!apiKey) {
-      throw new Error("Unable to establish conversation. Backend is offline, and no client-side VITE_GEMINI_API_KEY environment config key is detected.");
+      throw new Error(
+        "Chat is not working because this app is currently hosted on a static web provider (such as Vercel) where the custom Express server is unavailable, and no client-side Gemini API key is configured.\n\n" +
+        "To easily fix this and start chatting right now:\n" +
+        "1. Open Settings (using the Sliders icon at the bottom of the sidebar).\n" +
+        "2. Paste your own Gemini API Key (or configure VITE_GEMINI_API_KEY as an environment variables parameter on your host).\n" +
+        "3. Select Close, and start typing your prompt!"
+      );
     }
 
     const ai = new GoogleGenAI({
@@ -404,24 +411,42 @@ export default function App() {
     try {
       await signInWithPopup(auth, googleProvider);
     } catch (e: any) {
-      alert("Sign In failed: " + e.message);
+      let friendlyMsg = e.message || "Google Sign In failed.";
+      if (e.code === 'auth/unauthorized-domain' || friendlyMsg.includes("unauthorized-domain")) {
+        friendlyMsg = "Google Sign In failure (" + e.code + "):\n\n" +
+          "Your current host domain (like 'immature.vercel.app') is not yet whitelisted in your Firebase project.\n\n" +
+          "To fix this, go to your Firebase Console -> Authentication -> Settings tab -> Authorized Domains, and add 'immature.vercel.app' to the list, then refresh this page!";
+      }
+      throw new Error(friendlyMsg);
     }
   };
 
   const handleSignInWithEmail = async (email: string, pass: string, isSignUp: boolean, displayName?: string) => {
-    if (isSignUp) {
-      const credentials = await createUserWithEmailAndPassword(auth, email, pass);
-      // Wait for Auth Listener to setup, append nickname
-      if (credentials.user) {
-        await setDoc(doc(db, 'users', credentials.user.uid), {
-          uid: credentials.user.uid,
-          email: email,
-          displayName: displayName || email.split('@')[0],
-          createdAt: new Date().toISOString()
-        }, { merge: true });
+    try {
+      if (isSignUp) {
+        const credentials = await createUserWithEmailAndPassword(auth, email, pass);
+        // Wait for Auth Listener to setup, append nickname
+        if (credentials.user) {
+          await setDoc(doc(db, 'users', credentials.user.uid), {
+            uid: credentials.user.uid,
+            email: email,
+            displayName: displayName || email.split('@')[0],
+            createdAt: new Date().toISOString()
+          }, { merge: true });
+        }
+      } else {
+        await signInWithEmailAndPassword(auth, email, pass);
       }
-    } else {
-      await signInWithEmailAndPassword(auth, email, pass);
+    } catch (err: any) {
+      let friendlyMsg = err.message || "Authentication failed.";
+      if (err.code === 'auth/operation-not-allowed' || friendlyMsg.includes('auth/operation-not-allowed') || friendlyMsg.includes('operation-not-allowed')) {
+        friendlyMsg = "Email/Password sign-in is disabled in your Firebase console.\n\n" +
+          "Please fix this with these steps:\n" +
+          "1. Go to Firebase Console -> Authentication -> Sign-in Method.\n" +
+          "2. Click 'Add new provider', select 'Email/Password', toggle it to Enabled, and Save.\n" +
+          "3. Also go to the Settings tab -> Authorized Domains and ensure 'immature.vercel.app' is added to the Authorized Domains list.";
+      }
+      throw new Error(friendlyMsg);
     }
   };
 
@@ -643,7 +668,8 @@ export default function App() {
           (citations) => {
             setCurrentCitations(citations);
           },
-          controller.signal
+          controller.signal,
+          settings.geminiApiKey
         );
 
         // Finish streaming and write AI answer in database securely
@@ -755,7 +781,8 @@ export default function App() {
         (citations) => {
           setCurrentCitations(citations);
         },
-        controller.signal
+        controller.signal,
+        settings.geminiApiKey
       );
 
       // Finish streaming and write AI answer in database securely
@@ -835,7 +862,10 @@ export default function App() {
           [],
           (chunk) => {
             accumulated = chunk;
-          }
+          },
+          undefined,
+          undefined,
+          settings.geminiApiKey
         );
       } catch (err: any) {
         console.error("Voice response failed:", err);
@@ -882,7 +912,10 @@ export default function App() {
         [],
         (chunk) => {
           accumulated = chunk;
-        }
+        },
+        undefined,
+        undefined,
+        settings.geminiApiKey
       );
     } catch (err: any) {
       console.error("Authenticated User voice chat failed:", err);

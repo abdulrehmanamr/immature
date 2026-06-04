@@ -1,0 +1,141 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Static Validation Id Checker
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // --- Entity Validations ---
+
+    function isValidUser(data) {
+      return data.get('uid', '') == request.auth.uid 
+        && data.get('email', '') is string && data.get('email', '').size() <= 256
+        && data.get('displayName', '') is string && data.get('displayName', '').size() <= 128;
+    }
+
+    function isValidSetting(data) {
+      return data.get('userId', '') == request.auth.uid
+        && data.get('theme', 'dark') in ['light', 'dark']
+        && data.get('voiceName', '') is string && data.get('voiceName', '').size() <= 128
+        && data.get('voiceSpeed', 1.0) is number && data.get('voiceSpeed', 1.0) >= 0.2 && data.get('voiceSpeed', 1.0) <= 3.0
+        && data.get('voicePitch', 1.0) is number && data.get('voicePitch', 1.0) >= 0.2 && data.get('voicePitch', 1.0) <= 3.0;
+    }
+
+    function isValidConversation(data) {
+      return data.get('id', '') is string && data.get('id', '').size() <= 128
+        && data.get('userId', '') == request.auth.uid
+        && data.get('title', '') is string && data.get('title', '').size() <= 500;
+    }
+
+    function isValidMessage(data) {
+      return data.get('id', '') is string && data.get('id', '').size() <= 128
+        && data.get('conversationId', '') is string && data.get('conversationId', '').size() <= 128
+        && data.get('userId', '') == request.auth.uid
+        && data.get('role', 'user') in ['user', 'assistant']
+        && data.get('content', '') is string && data.get('content', '').size() <= 150000
+        && (!data.keys().hasAny(['attachments']) || (data.get('attachments', []) is list && data.get('attachments', []).size() <= 10));
+    }
+
+    function isValidMemory(data) {
+      return data.get('id', '') is string && data.get('id', '').size() <= 128
+        && data.get('userId', '') == request.auth.uid
+        && data.get('content', '') is string && data.get('content', '').size() <= 10000
+        && data.get('type', 'fact') in ['fact', 'preference', 'instruction'];
+    }
+
+    // --- Rules Definitions ---
+
+    // 1. Users Collection
+    match /users/{userId} {
+      allow get: if isSignedIn() && userId == request.auth.uid;
+      allow create, update: if isSignedIn() && userId == request.auth.uid 
+        && isValidUser(incoming());
+    }
+
+    // 2. Settings Private Subcollection
+    match /users/{userId}/settings/info {
+      allow get: if isSignedIn() && userId == request.auth.uid;
+      allow create, update: if isSignedIn() && userId == request.auth.uid
+        && isValidSetting(incoming());
+    }
+
+    // 3. Conversations (Query Enforcer Applied)
+    match /conversations/{conversationId} {
+      allow get: if isSignedIn() && existing().userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      
+      allow create: if isSignedIn() && isValidId(conversationId)
+        && isValidConversation(incoming())
+        && incoming().createdAt is string && incoming().createdAt.size() <= 64
+        && incoming().updatedAt is string && incoming().updatedAt.size() <= 64;
+
+      allow update: if isSignedIn() && existing().userId == request.auth.uid
+        && isValidConversation(incoming())
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt is string && incoming().updatedAt.size() <= 64
+        && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'updatedAt']);
+
+      allow delete: if isSignedIn() && existing().userId == request.auth.uid;
+    }
+
+    // 4. Messages (Secure Direct Access Checked)
+    match /conversations/{conversationId}/messages/{messageId} {
+      allow get, list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      
+      allow create: if isSignedIn() && isValidId(messageId) && isValidId(conversationId)
+        && incoming().userId == request.auth.uid
+        && isValidMessage(incoming())
+        && incoming().createdAt is string && incoming().createdAt.size() <= 64;
+
+      allow update: if isSignedIn() && existing().userId == request.auth.uid
+        && isValidMessage(incoming())
+        && incoming().userId == existing().userId
+        && incoming().conversationId == existing().conversationId
+        && incoming().id == existing().id
+        && incoming().role == existing().role
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['content', 'attachments']);
+
+      allow delete: if isSignedIn() && existing().userId == request.auth.uid;
+    }
+
+    // 5. Memories
+    match /users/{userId}/memories/{memoryId} {
+      allow get: if isSignedIn() && userId == request.auth.uid;
+      allow list: if isSignedIn() && userId == request.auth.uid;
+
+      allow create: if isSignedIn() && userId == request.auth.uid && isValidId(memoryId)
+        && isValidMemory(incoming())
+        && incoming().createdAt is string && incoming().createdAt.size() <= 64;
+
+      allow update: if isSignedIn() && userId == request.auth.uid
+        && isValidMemory(incoming())
+        && incoming().userId == existing().userId
+        && incoming().id == existing().id
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['content', 'type']);
+
+      allow delete: if isSignedIn() && userId == request.auth.uid;
+    }
+  }
+}

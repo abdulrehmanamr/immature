@@ -1,0 +1,92 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile with metadata",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email"]
+    },
+    "Conversation": {
+      "title": "Conversation",
+      "description": "A chat thread containing metadata",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "title"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "An interactive message inside a thread",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "conversationId": { "type": "string" },
+        "userId": { "type": "string" },
+        "role": { "type": "string", "enum": ["user", "assistant"] },
+        "content": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "attachments": { "type": "array" }
+      },
+      "required": ["id", "conversationId", "userId", "role", "content", "createdAt"]
+    },
+    "Memory": {
+      "title": "Memory",
+      "description": "Short or long-term dynamic facts about the user's choices or details",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "content": { "type": "string" },
+        "type": { "type": "string", "enum": ["fact", "preference", "instruction"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "content", "type", "createdAt"]
+    },
+    "Setting": {
+      "title": "Setting",
+      "description": "User preferences stored in Firestore",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "theme": { "type": "string", "enum": ["light", "dark"] },
+        "voiceName": { "type": "string" },
+        "voiceSpeed": { "type": "number" },
+        "voicePitch": { "type": "number" }
+      },
+      "required": ["userId"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "User",
+      "description": "The users collection holds basic credentials."
+    },
+    "users/{userId}/settings/info": {
+      "schema": "Setting",
+      "description": "Private settings configuration document"
+    },
+    "conversations/{conversationId}": {
+      "schema": "Conversation",
+      "description": "Conversations list scoped by user ID"
+    },
+    "conversations/{conversationId}/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Subcollection under conversations holding rich message entries chronologically"
+    },
+    "users/{userId}/memories/{memoryId}": {
+      "schema": "Memory",
+      "description": "Memories list containing conversational insights dynamically generated or editable by user"
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "AEZ Ai",
+  "description": "AEZ-inspired high-fidelity multimodal AI assistant powered by immature_gangg, with speech-to-speech, PDF reading, documents understanding, search grounding, and smart facts memory.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

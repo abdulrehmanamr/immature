@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { GoogleGenAI } from '@google/genai';
+import firebaseConfigLocal from '../firebase-applet-config.json';
 import { 
   auth, db, googleProvider, handleFirestoreError, OperationType 
 } from './lib/firebase';
@@ -18,6 +20,158 @@ import VoiceAssistant from './components/VoiceAssistant';
 import MemoryPanel from './components/MemoryPanel';
 import FileExporter from './components/FileExporter';
 import { Sparkles, Brain, Sliders, Menu, X, LogIn } from 'lucide-react';
+
+async function streamGeminiResponse(
+  message: string,
+  history: { role: string; content: string }[],
+  searchEnabled: boolean,
+  attachments: any[],
+  onChunk: (text: string) => void,
+  onCitations?: (chunks: any[]) => void,
+  signal?: AbortSignal
+): Promise<string> {
+  try {
+    // 1. Attempt Server SSE endpoint first
+    const response = await fetch('/api/gemini/chat', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        message,
+        history,
+        searchEnabled,
+        attachments
+      }),
+      signal
+    });
+
+    if (response.ok && response.body) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let streamAccumulator = '';
+
+      while (true) {
+        if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+          
+          const rawJSON = trimmed.slice(6);
+          if (rawJSON === '[DONE]') {
+            break;
+          }
+
+          try {
+            const parsed = JSON.parse(rawJSON);
+            if (parsed.text) {
+              streamAccumulator += parsed.text;
+              onChunk(streamAccumulator);
+            }
+            if (parsed.groundingMetadata?.groundingChunks && onCitations) {
+              onCitations(parsed.groundingMetadata.groundingChunks);
+            }
+          } catch (e) {
+            // Buffer fragment processing catch
+          }
+        }
+      }
+      return streamAccumulator;
+    } else {
+      throw new Error(`Endpoint response code ${response.status}`);
+    }
+  } catch (err: any) {
+    if (err.name === 'AbortError' || err.message === 'Aborted') {
+      throw err;
+    }
+
+    console.warn("Express backend endpoint failed/404. Initiating client-side Gemini fallback strategy...");
+    
+    // Resolve fallback API Key
+    const apiKey = (import.meta as any).env.VITE_GEMINI_API_KEY || (import.meta as any).env.VITE_FIREBASE_API_KEY || firebaseConfigLocal?.apiKey;
+    if (!apiKey) {
+      throw new Error("Unable to establish conversation. Backend is offline, and no client-side VITE_GEMINI_API_KEY environment config key is detected.");
+    }
+
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build'
+        }
+      }
+    });
+
+    // Build standard generative context contents array
+    const contents: any[] = [];
+    for (const h of history) {
+      // Clean system instructions out of general roles if they are system messages
+      if (h.content.includes("IMPORTANT: Remember these long-term preferences")) {
+        continue;
+      }
+      contents.push({
+        role: h.role === 'user' ? 'user' : 'model',
+        parts: [{ text: h.content }]
+      });
+    }
+
+    // Capture attachments and append to user turn inline
+    const parts: any[] = [];
+    if (attachments && Array.isArray(attachments)) {
+      for (const att of attachments) {
+        let cleanBase = att.base64 || '';
+        if (cleanBase && cleanBase.includes(';base64,')) {
+          cleanBase = cleanBase.split(';base64,').pop() || '';
+        }
+        if (cleanBase) {
+          parts.push({
+            inlineData: {
+              data: cleanBase,
+              mimeType: att.type
+            }
+          });
+        }
+      }
+    }
+    parts.push({ text: message });
+    contents.push({ role: 'user', parts });
+
+    const tools: any[] = [];
+    if (searchEnabled) {
+      tools.push({ googleSearch: {} });
+    }
+
+    // Call Direct Stream using @google/genai SDK
+    const responseStream = await ai.models.generateContentStream({
+      model: 'gemini-3.5-flash',
+      contents,
+      config: {
+        systemInstruction: "You are AEZ Ai, a Claude-level elite AI Assistant built to think step-by-step, explain complex algorithms, read files/PDFs, understand code/diagrams, and analyze screenshots. Format math variables in Markdown and code blocks using standard tags with specified languages. Ground searches where helpful.",
+        tools: tools.length > 0 ? tools : undefined
+      }
+    });
+
+    let streamAccumulator = '';
+    for await (const chunk of responseStream) {
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      const text = chunk.text || "";
+      streamAccumulator += text;
+      onChunk(streamAccumulator);
+
+      if (chunk.candidates?.[0]?.groundingMetadata?.groundingChunks && onCitations) {
+        onCitations(chunk.candidates[0].groundingMetadata.groundingChunks);
+      }
+    }
+
+    return streamAccumulator;
+  }
+}
 
 export default function App() {
   const [user, setUser] = useState<any>(null);
@@ -478,57 +632,19 @@ export default function App() {
         }));
 
       try {
-        const response = await fetch('/api/gemini/chat', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
+        const streamAccumulator = await streamGeminiResponse(
+          text,
+          historyPayload,
+          searchEnabled,
+          attachmentsList,
+          (chunk) => {
+            setCurrentStreamText(chunk);
           },
-          body: JSON.stringify({
-            message: text,
-            history: historyPayload,
-            searchEnabled,
-            attachments: attachmentsList
-          }),
-          signal: controller.signal
-        });
-
-        if (!response.body) throw new Error("Null Stream Response returned.");
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let streamAccumulator = '';
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-
-          const chunk = decoder.decode(value);
-          const lines = chunk.split('\n');
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed || !trimmed.startsWith('data: ')) continue;
-            
-            const rawJSON = trimmed.slice(6);
-            if (rawJSON === '[DONE]') {
-              break;
-            }
-
-            try {
-              const parsed = JSON.parse(rawJSON);
-              if (parsed.text) {
-                streamAccumulator += parsed.text;
-                setCurrentStreamText(streamAccumulator);
-              }
-              // Check for grounding search chunk citations
-              if (parsed.groundingMetadata?.groundingChunks) {
-                setCurrentCitations(parsed.groundingMetadata.groundingChunks);
-              }
-            } catch (eStr) {
-              // chunk formatting buffer slice bypass
-            }
-          }
-        }
+          (citations) => {
+            setCurrentCitations(citations);
+          },
+          controller.signal
+        );
 
         // Finish streaming and write AI answer in database securely
         if (streamAccumulator) {
@@ -628,57 +744,19 @@ export default function App() {
     }
 
     try {
-      const response = await fetch('/api/gemini/chat', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
+      const streamAccumulator = await streamGeminiResponse(
+        text,
+        historyPayload,
+        searchEnabled,
+        attachmentsList,
+        (chunk) => {
+          setCurrentStreamText(chunk);
         },
-        body: JSON.stringify({
-          message: text,
-          history: historyPayload,
-          searchEnabled,
-          attachments: attachmentsList
-        }),
-        signal: controller.signal
-      });
-
-      if (!response.body) throw new Error("Null Stream Response returned.");
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let streamAccumulator = '';
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || !trimmed.startsWith('data: ')) continue;
-          
-          const rawJSON = trimmed.slice(6);
-          if (rawJSON === '[DONE]') {
-            break;
-          }
-
-          try {
-              const parsed = JSON.parse(rawJSON);
-              if (parsed.text) {
-                streamAccumulator += parsed.text;
-                setCurrentStreamText(streamAccumulator);
-              }
-              // Check for grounding search chunk citations
-              if (parsed.groundingMetadata?.groundingChunks) {
-                setCurrentCitations(parsed.groundingMetadata.groundingChunks);
-              }
-          } catch (eStr) {
-            // chunk formatting buffer slice bypass
-          }
-        }
-      }
+        (citations) => {
+          setCurrentCitations(citations);
+        },
+        controller.signal
+      );
 
       // Finish streaming and write AI answer in database securely
       if (streamAccumulator) {
@@ -748,37 +826,19 @@ export default function App() {
 
       incrementTrial();
 
-      const response = await fetch('/api/gemini/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: transcribedPrompt,
-          history: nextMessages.filter(m => m.conversationId === convoId).slice(-5).map(m => ({ role: m.role, content: m.content })),
-          searchEnabled: false
-        })
-      });
-
-      if (!response.body) return "No text response.";
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
       let accumulated = '';
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
-        for (const line of lines) {
-          if (line.trim().startsWith('data: ')) {
-            const raw = line.trim().slice(6);
-            if (raw !== '[DONE]') {
-              try {
-                const p = JSON.parse(raw);
-                if (p.text) accumulated += p.text;
-              } catch (e) {}
-            }
+      try {
+        accumulated = await streamGeminiResponse(
+          transcribedPrompt,
+          nextMessages.filter(m => m.conversationId === convoId).slice(-5).map(m => ({ role: m.role, content: m.content })),
+          false,
+          [],
+          (chunk) => {
+            accumulated = chunk;
           }
-        }
+        );
+      } catch (err: any) {
+        console.error("Voice response failed:", err);
       }
 
       if (accumulated) {
@@ -813,38 +873,19 @@ export default function App() {
     };
     await setDoc(doc(db, 'conversations', activeConversationId, 'messages', userMessageId), userMsg);
 
-    // Call basic API fetch
-    const response = await fetch('/api/gemini/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: transcribedPrompt,
-        history: messages.slice(-5).map(m => ({ role: m.role, content: m.content })),
-        searchEnabled: false
-      })
-    });
-
-    if (!response.body) return "No text response.";
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
     let accumulated = '';
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      const chunk = decoder.decode(value);
-      const lines = chunk.split('\n');
-      for (const line of lines) {
-        if (line.trim().startsWith('data: ')) {
-          const raw = line.trim().slice(6);
-          if (raw !== '[DONE]') {
-            try {
-              const p = JSON.parse(raw);
-              if (p.text) accumulated += p.text;
-            } catch (e) {}
-          }
+    try {
+      accumulated = await streamGeminiResponse(
+        transcribedPrompt,
+        messages.slice(-5).map(m => ({ role: m.role, content: m.content })),
+        false,
+        [],
+        (chunk) => {
+          accumulated = chunk;
         }
-      }
+      );
+    } catch (err: any) {
+      console.error("Authenticated User voice chat failed:", err);
     }
 
     // Save AI

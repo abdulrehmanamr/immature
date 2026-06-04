@@ -49,7 +49,7 @@ export default function ChatArea({
   };
 
   // Highly robust custom markdown & table renderer
-  const renderFormattedContent = (content: string, msgId: string) => {
+  const renderFormattedContent = (content: string, msgId: string, showCursor = false) => {
     if (!content) return null;
 
     // First, split elements by triple-backtick code blocks
@@ -133,10 +133,14 @@ export default function ChatArea({
 
       // Normal text paragraphs with list items, headers
       const lines = part.split('\n');
+      const isLastPart = index === parts.length - 1;
+
       return (
         <div key={index} className="space-y-2">
           {lines.map((line, lIdx) => {
             const trimmed = line.trim();
+            const isLastLine = isLastPart && lIdx === lines.length - 1;
+
             if (!trimmed) return <div key={lIdx} className="h-2"></div>;
 
             // Headers formatting
@@ -154,7 +158,12 @@ export default function ChatArea({
             if (trimmed.startsWith('* ') || trimmed.startsWith('- ')) {
               return (
                 <ul key={lIdx} className="list-disc list-inside pl-3 space-y-1 my-1">
-                  <li className="text-sm leading-relaxed text-neutral-200">{parseInlineMarkdown(trimmed.slice(2))}</li>
+                  <li className="text-sm leading-relaxed text-neutral-200">
+                    {parseInlineMarkdown(trimmed.slice(2))}
+                    {isLastLine && showCursor && (
+                      <span className="inline-block w-1.5 h-3.5 bg-[#8B5CF6] ml-1 animate-pulse align-middle" />
+                    )}
+                  </li>
                 </ul>
               );
             }
@@ -164,7 +173,12 @@ export default function ChatArea({
               const contentOnly = trimmed.replace(/^\d+\.\s/, '');
               return (
                 <ol key={lIdx} className="list-decimal list-inside pl-3 space-y-1 my-1">
-                  <li className="text-sm leading-relaxed text-neutral-200">{parseInlineMarkdown(contentOnly)}</li>
+                  <li className="text-sm leading-relaxed text-neutral-200">
+                    {parseInlineMarkdown(contentOnly)}
+                    {isLastLine && showCursor && (
+                      <span className="inline-block w-1.5 h-3.5 bg-[#8B5CF6] ml-1 animate-pulse align-middle" />
+                    )}
+                  </li>
                 </ol>
               );
             }
@@ -173,6 +187,9 @@ export default function ChatArea({
             return (
               <p key={lIdx} className="leading-relaxed text-neutral-200 last:mb-0 text-sm whitespace-pre-wrap">
                 {parseInlineMarkdown(line)}
+                {isLastLine && showCursor && (
+                  <span className="inline-block w-1.5 h-3.5 bg-[#8B5CF6] ml-1 animate-pulse align-middle" />
+                )}
               </p>
             );
           })}
@@ -432,10 +449,8 @@ export default function ChatArea({
                 </div>
                 <div className="p-4 rounded-2xl bg-transparent text-neutral-100 border-none leading-relaxed text-sm">
                   <div className="space-y-3">
-                    {renderFormattedContent(currentStreamText, 'streaming-message')}
+                    {renderFormattedContent(currentStreamText, 'streaming-message', true)}
                   </div>
-                  {/* Blinking cursor */}
-                  <span className="inline-block w-1.5 h-4 bg-[#8B5CF6] ml-1 animate-pulse" />
                 </div>
               </div>
             </div>

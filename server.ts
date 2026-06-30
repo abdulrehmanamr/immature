@@ -19,10 +19,7 @@ app.use(express.urlencoded({ limit: "50mb", extended: true }));
 let aiInstance: GoogleGenAI | null = null;
 function getGeminiClient(): GoogleGenAI {
   if (!aiInstance) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      throw new Error("GEMINI_API_KEY environment variable is missing.");
-    }
+    const apiKey = process.env.GEMINI_API_KEY || "AQ.Ab8RN6JdHLFmJFlOpK3jtpAmZ6nj4SlVLnXE2EHEu8AZAVh3nQ";
     aiInstance = new GoogleGenAI({
       apiKey,
       httpOptions: {
@@ -92,15 +89,52 @@ app.post("/api/gemini/chat", async (req, res) => {
       tools.push({ googleSearch: {} });
     }
 
-    // Call Gemini API Stream
-    const responseStream = await ai.models.generateContentStream({
-      model: "gemini-3.5-flash",
-      contents,
-      config: {
-        systemInstruction: "You are AEZ Ai, a Claude-level elite AI Assistant built to think step-by-step, explain complex algorithms, read files/PDFs, understand code/diagrams, and analyze screenshots. Format math variables in Markdown and code blocks using standard tags with specified languages. Ground searches where helpful.",
-        tools: tools.length > 0 ? tools : undefined,
-      },
-    });
+    // Call Gemini API Stream with fallback for high reliability
+    let responseStream;
+    try {
+      responseStream = await ai.models.generateContentStream({
+        model: "gemini-3.5-flash",
+        contents,
+        config: {
+          systemInstruction: "You are AEZ Ai, a Claude-level elite AI Assistant built to think step-by-step, explain complex algorithms, read files/PDFs, understand code/diagrams, and analyze screenshots. Format math variables in Markdown and code blocks using standard tags with specified languages. Ground searches where helpful.",
+          tools: tools.length > 0 ? tools : undefined,
+        },
+      });
+    } catch (error: any) {
+      const errorStr = (error.message || String(error)).toLowerCase();
+      if (
+        errorStr.includes("503") ||
+        errorStr.includes("429") ||
+        errorStr.includes("unavailable") ||
+        errorStr.includes("demand") ||
+        errorStr.includes("overloaded") ||
+        errorStr.includes("rate limit")
+      ) {
+        console.warn("Primary 'gemini-3.5-flash' is overloaded or unavailable. Trying fallback 'gemini-flash-latest'...");
+        try {
+          responseStream = await ai.models.generateContentStream({
+            model: "gemini-flash-latest",
+            contents,
+            config: {
+              systemInstruction: "You are AEZ Ai, a Claude-level elite AI Assistant built to think step-by-step, explain complex algorithms, read files/PDFs, understand code/diagrams, and analyze screenshots. Format math variables in Markdown and code blocks using standard tags with specified languages. Ground searches where helpful.",
+              tools: tools.length > 0 ? tools : undefined,
+            },
+          });
+        } catch (fallbackError: any) {
+          console.warn("Fallback 'gemini-flash-latest' also failed. Falling back to 'gemini-3.1-flash-lite'...");
+          responseStream = await ai.models.generateContentStream({
+            model: "gemini-3.1-flash-lite",
+            contents,
+            config: {
+              systemInstruction: "You are AEZ Ai, a Claude-level elite AI Assistant built to think step-by-step, explain complex algorithms, read files/PDFs, understand code/diagrams, and analyze screenshots. Format math variables in Markdown and code blocks using standard tags with specified languages. Ground searches where helpful.",
+              tools: tools.length > 0 ? tools : undefined,
+            },
+          });
+        }
+      } else {
+        throw error;
+      }
+    }
 
     // Set headers for SSE
     res.setHeader("Content-Type", "text/event-stream");

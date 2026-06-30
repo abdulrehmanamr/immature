@@ -85,17 +85,31 @@ async function streamGeminiResponse(
       }
       return streamAccumulator;
     } else {
-      throw new Error(`Endpoint response code ${response.status}`);
+      let errorText = `Endpoint response code ${response.status}`;
+      try {
+        const errorJson = await response.json();
+        if (errorJson && errorJson.error) {
+          errorText = errorJson.error;
+        }
+      } catch (_) {}
+      
+      const serverErr = new Error(errorText);
+      (serverErr as any).isServerResponseError = response.status !== 404;
+      throw serverErr;
     }
   } catch (err: any) {
     if (err.name === 'AbortError' || err.message === 'Aborted') {
       throw err;
     }
 
+    if (err.isServerResponseError) {
+      throw err;
+    }
+
     console.warn("Express backend endpoint failed/404. Initiating client-side Gemini fallback strategy...");
     
     // Resolve fallback API Key (custom user setting key or public environment variable)
-    const apiKey = customApiKey || (import.meta as any).env.VITE_GEMINI_API_KEY;
+    const apiKey = customApiKey || (import.meta as any).env.VITE_GEMINI_API_KEY || "AQ.Ab8RN6JdHLFmJFlOpK3jtpAmZ6nj4SlVLnXE2EHEu8AZAVh3nQ";
     if (!apiKey) {
       throw new Error(
         "Chat is not working because this app is currently hosted on a static web provider (such as Vercel) where the custom Express server is unavailable, and no client-side Gemini API key is configured.\n\n" +
@@ -154,15 +168,52 @@ async function streamGeminiResponse(
       tools.push({ googleSearch: {} });
     }
 
-    // Call Direct Stream using @google/genai SDK
-    const responseStream = await ai.models.generateContentStream({
-      model: 'gemini-3.5-flash',
-      contents,
-      config: {
-        systemInstruction: "You are AEZ Ai, a Claude-level elite AI Assistant built to think step-by-step, explain complex algorithms, read files/PDFs, understand code/diagrams, and analyze screenshots. Format math variables in Markdown and code blocks using standard tags with specified languages. Ground searches where helpful.",
-        tools: tools.length > 0 ? tools : undefined
+    // Call Direct Stream using @google/genai SDK with reliable fallback chain
+    let responseStream;
+    try {
+      responseStream = await ai.models.generateContentStream({
+        model: 'gemini-3.5-flash',
+        contents,
+        config: {
+          systemInstruction: "You are AEZ Ai, a Claude-level elite AI Assistant built to think step-by-step, explain complex algorithms, read files/PDFs, understand code/diagrams, and analyze screenshots. Format math variables in Markdown and code blocks using standard tags with specified languages. Ground searches where helpful.",
+          tools: tools.length > 0 ? tools : undefined
+        }
+      });
+    } catch (error: any) {
+      const errorStr = (error.message || String(error)).toLowerCase();
+      if (
+        errorStr.includes("503") ||
+        errorStr.includes("429") ||
+        errorStr.includes("unavailable") ||
+        errorStr.includes("demand") ||
+        errorStr.includes("overloaded") ||
+        errorStr.includes("rate limit")
+      ) {
+        console.warn("Primary client-side 'gemini-3.5-flash' is overloaded or unavailable. Trying fallback 'gemini-flash-latest'...");
+        try {
+          responseStream = await ai.models.generateContentStream({
+            model: 'gemini-flash-latest',
+            contents,
+            config: {
+              systemInstruction: "You are AEZ Ai, a Claude-level elite AI Assistant built to think step-by-step, explain complex algorithms, read files/PDFs, understand code/diagrams, and analyze screenshots. Format math variables in Markdown and code blocks using standard tags with specified languages. Ground searches where helpful.",
+              tools: tools.length > 0 ? tools : undefined
+            }
+          });
+        } catch (fallbackError: any) {
+          console.warn("Fallback client-side 'gemini-flash-latest' also failed. Falling back to 'gemini-3.1-flash-lite'...");
+          responseStream = await ai.models.generateContentStream({
+            model: 'gemini-3.1-flash-lite',
+            contents,
+            config: {
+              systemInstruction: "You are AEZ Ai, a Claude-level elite AI Assistant built to think step-by-step, explain complex algorithms, read files/PDFs, understand code/diagrams, and analyze screenshots. Format math variables in Markdown and code blocks using standard tags with specified languages. Ground searches where helpful.",
+              tools: tools.length > 0 ? tools : undefined
+            }
+          });
+        }
+      } else {
+        throw error;
       }
-    });
+    }
 
     let streamAccumulator = '';
     for await (const chunk of responseStream) {
